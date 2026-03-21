@@ -11,12 +11,11 @@ Handles:
 
 import asyncio
 import re
+import ssl
 from typing import Optional
 
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
-from slack_sdk.web.async_client import AsyncWebClient
-
 from src.config.settings import settings
 from src.utils.logger import get_logger
 
@@ -41,7 +40,9 @@ slack_app = AsyncApp(
     signing_secret=settings.slack_signing_secret,
 )
 
-web_client: AsyncWebClient = slack_app.client
+slack_app.client.ssl = ssl.create_default_context()
+
+web_client = slack_app.client
 
 agent = Agent()
 
@@ -118,7 +119,10 @@ async def get_channel_info(channel_id: str):
 @slack_app.event("message")
 async def handle_message(event, say):
 
+    logger.info("=== STEP 0: Message event received ===")
+
     if event.get("subtype"):
+        logger.info(f"Skipping message subtype: {event.get('subtype')}")
         return
 
     text = event.get("text")
@@ -127,15 +131,19 @@ async def handle_message(event, say):
     ts = event.get("ts")
     thread_ts = event.get("thread_ts")
 
+    logger.info(f"STEP 1: Raw event extracted | user={user}, channel={channel}, text={text[:50] if text else None}")
+
     if not text or not user:
+        logger.info("STEP 1: Skipping - missing text or user")
         return
 
     bot_id = await get_bot_user_id()
 
     if user == bot_id:
+        logger.info("STEP 1: Skipping - message from bot itself")
         return
 
-    logger.info(f"Message from {user} in {channel}")
+    logger.info(f"STEP 1: Valid message from {user} in {channel}")
 
     is_dm = is_direct_message(channel)
 
@@ -148,6 +156,8 @@ async def handle_message(event, say):
         if not is_user_approved(user):
 
             code = generate_pairing_code(user)
+
+            logger.info(f"DM policy: user {user} not approved, sending pairing code")
 
             await say(
                 text=f"""
@@ -167,17 +177,27 @@ Ask an admin to approve with:
     # ------------------------------------------------
 
     if not is_dm:
+        # Check if bot was mentioned and remove the mention if so
+        if is_bot_mentioned(text, bot_id):
+            clean_text = remove_bot_mention(text, bot_id)
+            logger.info(f"STEP 2: Bot mentioned in channel, proceeding")
+        else:
+            # Also process messages without mention (more flexible)
+            clean_text = text
+            logger.info(f"STEP 2: Processing channel message without explicit mention")
+    else:
+        clean_text = text
+        logger.info(f"STEP 2: Processing direct message")
 
-        if not is_bot_mentioned(text, bot_id):
-            return
-
-    clean_text = text if is_dm else remove_bot_mention(text, bot_id)
+    logger.info(f"STEP 2: Cleaned text = '{clean_text}'")
 
     # ------------------------------------------------
     # Help
     # ------------------------------------------------
 
     if clean_text.lower() in ["help", "/help"]:
+
+        logger.info("STEP 2: Help command detected")
 
         await say(
             text="""
@@ -201,6 +221,8 @@ Commands:
 
     if "summarize" in clean_text.lower() or clean_text.lower() == "tldr":
 
+        logger.info("STEP 2: Summarize command detected")
+
         if thread_ts:
 
             replies = await web_client.conversations_replies(
@@ -219,12 +241,16 @@ Commands:
 
             summary = await summarize_thread(msgs, context)
 
+            logger.info(f"STEP 5: Sending thread summary to Slack")
+
             await say(
                 text=f"*Thread Summary*\n\n{summary}",
                 thread_ts=thread_ts,
             )
 
         else:
+
+            logger.info("STEP 2: Summarize requested but not in thread")
 
             await say(
                 text="Use summarize inside a thread.",
@@ -234,19 +260,31 @@ Commands:
         return
 
     # ------------------------------------------------
-    # Agent Processing
+    # Agent Processing (WITH COMPREHENSIVE DEBUG)
     # ------------------------------------------------
+
+    logger.info("STEP 3: Beginning agent processing")
 
     try:
 
+        logger.info(f"STEP 3a: Getting/creating session for user={user}, channel={channel}")
+
         session = get_or_create_session(user, channel, thread_ts)
+
+        logger.info(f"STEP 3b: Got session id={session['id']}")
+
+        logger.info(f"STEP 3c: Fetching user info for {user}")
 
         user_info = await get_user_info(user)
 
+        logger.info(f"STEP 3d: Got user_info: {user_info}")
+
         channel_info = {"name": "DM"} if is_dm else await get_channel_info(channel)
 
+        logger.info(f"STEP 3e: Got channel_info: {channel_info}")
+
         context = AgentContext(
-            session_id=session.id,
+            session_id=session["id"],
             user_id=user,
             channel_id=channel,
             thread_ts=thread_ts,
@@ -254,21 +292,49 @@ Commands:
             channel_name=channel_info["name"],
         )
 
+        logger.info(f"STEP 3f: Created context | session_id={context.session_id}, user_name={context.user_name}")
+
+        logger.info(f"STEP 4: CALLING AGENT with message: '{clean_text}'")
+
         response = await agent.process_message(clean_text, context)
+
+        logger.info(f"STEP 4: AGENT RETURNED | response.content={response.content[:100] if response.content else 'NONE'} | should_thread={response.should_thread}")
+
+        logger.info(f"STEP 5: SENDING RESPONSE TO SLACK")
 
         await say(
             text=response.content,
             thread_ts=thread_ts or ts if response.should_thread else None,
         )
 
+        logger.info("STEP 6: SUCCESSFULLY SENT TO SLACK [OK]")
+
     except Exception as e:
 
-        logger.error(f"Agent processing failed: {e}")
+        logger.error(f"[ERROR] AGENT PROCESSING FAILED at some step: {type(e).__name__}: {e}", exc_info=True)
 
-        await say(
-            text="Sorry, something went wrong processing your message.",
-            thread_ts=thread_ts or ts,
-        )
+        error_text = str(e).lower()
+
+        if "invalid_api_key" in error_text or "incorrect api key" in error_text:
+            user_error = (
+                "AI provider is not configured correctly (invalid OPENAI_API_KEY). "
+                "Please update environment variables and restart the bot."
+            )
+        elif "timeout" in error_text or "timed out" in error_text:
+            user_error = (
+                "AI request timed out. Please try again in a few seconds."
+            )
+        else:
+            user_error = "Sorry, something went wrong processing your message. Check logs for details."
+
+        try:
+            await say(
+                text=user_error,
+                thread_ts=thread_ts or ts,
+            )
+            logger.info("Sent error message to Slack")
+        except Exception as say_error:
+            logger.error(f"Failed to send error message to Slack: {say_error}", exc_info=True)
 
 
 # ------------------------------------------------
@@ -303,6 +369,11 @@ async def approve_command(ack, respond, command):
 async def start_slack_app():
 
     global socket_handler
+
+    if not settings.slack_app_token:
+        raise RuntimeError(
+            "SLACK_APP_TOKEN is required to start the Slack socket mode app"
+        )
 
     socket_handler = AsyncSocketModeHandler(
         slack_app,

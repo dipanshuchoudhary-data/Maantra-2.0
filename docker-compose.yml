@@ -1,0 +1,110 @@
+version: "3.9"
+
+services:
+
+  slack-assistant:
+
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: maantra-slack-assistant
+
+    restart: unless-stopped
+
+    command: python -m src.main
+
+    environment:
+
+      # --------------------------------------------------
+      # Slack
+      # --------------------------------------------------
+
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+
+      # --------------------------------------------------
+      # AI Providers
+      # --------------------------------------------------
+
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MEM0_API_KEY: ${MEM0_API_KEY:-}
+
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-claude-sonnet-4-20250514}
+
+      # --------------------------------------------------
+      # App Config
+      # --------------------------------------------------
+
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      DATABASE_PATH: /app/data/assistant.db
+
+      MAX_HISTORY_MESSAGES: ${MAX_HISTORY_MESSAGES:-50}
+
+      SESSION_TIMEOUT_MINUTES: ${SESSION_TIMEOUT_MINUTES:-60}
+
+      # --------------------------------------------------
+      # Security
+      # --------------------------------------------------
+
+      DM_POLICY: ${DM_POLICY:-pairing}
+
+      ALLOWED_USERS: ${ALLOWED_USERS:-*}
+
+      ALLOWED_CHANNELS: ${ALLOWED_CHANNELS:-*}
+
+      # --------------------------------------------------
+      # RAG
+      # --------------------------------------------------
+
+      RAG_ENABLED: ${RAG_ENABLED:-true}
+
+      RAG_VECTOR_DB_PATH: /app/data/vectorstore
+
+      RAG_MAX_RESULTS: ${RAG_MAX_RESULTS:-10}
+
+      RAG_MIN_SIMILARITY: ${RAG_MIN_SIMILARITY:-0.5}
+
+      # --------------------------------------------------
+      # Features
+      # --------------------------------------------------
+
+      ENABLE_THREAD_SUMMARY: ${ENABLE_THREAD_SUMMARY:-true}
+
+      ENABLE_TASK_SCHEDULER: ${ENABLE_TASK_SCHEDULER:-true}
+
+      ENABLE_REACTIONS: ${ENABLE_REACTIONS:-true}
+
+      ENABLE_TYPING_INDICATOR: ${ENABLE_TYPING_INDICATOR:-true}
+
+    volumes:
+
+      # SQLite DB
+      - assistant-data:/app/data
+
+      # logs
+      - assistant-logs:/app/logs
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('healthy')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+
+  assistant-data:
+    driver: local
+
+  assistant-logs:
+    driver: local

@@ -1,0 +1,16 @@
+import os
+import asyncio
+
+async def main():
+    token = os.getenv("NOTION_API_TOKEN")
+
+    if not token:
+        raise ValueError("Missing NOTION_API_TOKEN")
+
+    print("Notion MCP server started")
+
+    while True:
+        await asyncio.sleep(3600)
+
+if __name__ == "__main__":
+    asyncio.run(main())

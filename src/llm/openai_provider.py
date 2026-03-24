@@ -6,7 +6,7 @@ from src.llm.base_provider import BaseLLMProvider
 
 class OpenAIProvider(BaseLLMProvider):
 
-    def __init__(self):
+    def __init__(self, model_name: str | None = None):
 
         api_key = os.getenv("OPENAI_API_KEY")
 
@@ -15,16 +15,22 @@ class OpenAIProvider(BaseLLMProvider):
 
         self.client = AsyncOpenAI(api_key=api_key)
 
-        self.model = os.getenv("MODEL_NAME", "gpt-4o")
+        self.model = model_name or os.getenv("MODEL_NAME", "gpt-4o")
 
     async def chat(self, messages, tools=None):
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-        )
+        # Build request kwargs - only include tools if provided
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+        }
+
+        # Only add tools if provided (saves tokens)
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        response = await self.client.chat.completions.create(**kwargs)
 
         msg = response.choices[0].message
 

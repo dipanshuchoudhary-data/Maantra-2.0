@@ -62,9 +62,7 @@ from src.mcp import (
 logger = get_logger("agent")
 
 
-def _has_usable_openai_key() -> bool:
-
-    api_key = settings.ai.openai_api_key
+def _has_usable_key(api_key: str | None) -> bool:
 
     if not api_key:
         return False
@@ -80,6 +78,19 @@ def _has_usable_openai_key() -> bool:
     }
 
     return lowered not in placeholders
+
+
+def _has_rag_embedding_key() -> bool:
+
+    provider = (settings.rag.embedding_provider or "openai").lower()
+
+    if provider == "cohere":
+        return _has_usable_key(settings.ai.cohere_api_key)
+
+    if provider == "openrouter":
+        return _has_usable_key(settings.ai.openrouter_api_key)
+
+    return _has_usable_key(settings.ai.openai_api_key)
 
 
 # ------------------------------------------------------------------
@@ -118,6 +129,8 @@ class AgentContext:
 
     channel_name: Optional[str] = None
     user_name: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
 
 
 @dataclass
@@ -145,9 +158,9 @@ class Agent:
 
     def __init__(self):
 
-        self.llm = get_llm_provider()
+        self.default_llm = get_llm_provider()
 
-        self.max_history_messages = 10
+        self.max_history_messages = 5
         self.max_tool_iterations = 5
 
     # ------------------------------------------------------------------
@@ -173,7 +186,7 @@ class Agent:
             memories = await search_memory(
                 user_message,
                 user_id,
-                limit=5,
+                limit=3,
             )
 
             if not memories:
@@ -198,7 +211,7 @@ class Agent:
         if not settings.rag.enabled:
             return "", 0
 
-        if not _has_usable_openai_key():
+        if not _has_rag_embedding_key():
             return "", 0
 
         try:
@@ -214,9 +227,17 @@ class Agent:
             if not response.results:
                 return "", 0
 
-            context_chunks = [r.text for r in response.results]
+            # Truncate each chunk to max 500 chars to save tokens
+            context_chunks = []
+            for r in response.results:
+                text = r.text[:500] + "..." if len(r.text) > 500 else r.text
+                context_chunks.append(text)
 
             context = "\n\n".join(context_chunks)
+
+            # Cap total RAG context at 2000 chars
+            if len(context) > 2000:
+                context = context[:2000] + "\n\n[truncated]"
 
             return context, len(response.results)
 
@@ -292,11 +313,17 @@ class Agent:
         messages: List[Dict[str, Any]],
         tools,
         context: AgentContext,
+        llm_provider,
     ) -> Dict[str, Any]:
 
         iteration = 0
 
-        response = await self.llm.chat(
+        # If no tools, make a simple chat call (no tool_calls expected)
+        if not tools:
+            response = await llm_provider.chat(messages=messages, tools=None)
+            return response["message"]
+
+        response = await llm_provider.chat(
             messages=messages,
             tools=tools,
         )
@@ -348,7 +375,7 @@ class Agent:
                     }
                 )
 
-            response = await self.llm.chat(
+            response = await llm_provider.chat(
                 messages=messages,
                 tools=tools,
             )
@@ -405,12 +432,26 @@ class Agent:
         )
 
         # --------------------------------------------------------------
-        # TOOL REGISTRY
+        # SMART TOOL LOADING
         # --------------------------------------------------------------
 
-        tools = get_all_tools()
+        # Use keyword-based tool loading to reduce token count
+        # Only loads MCP tools when query indicates they're needed
+        tools = get_tools_for_query(user_message)
 
         logger.info(f"LLM call with {len(tools)} tools")
+
+        if context.llm_provider:
+            llm_provider = get_llm_provider(
+                provider_name=context.llm_provider,
+                model_name=context.llm_model,
+            )
+            logger.info(
+                f"Using session-selected provider={context.llm_provider} "
+                f"model={context.llm_model or 'default'}"
+            )
+        else:
+            llm_provider = self.default_llm
 
         # --------------------------------------------------------------
         # TOOL LOOP
@@ -420,12 +461,12 @@ class Agent:
             messages=messages,
             tools=tools,
             context=context,
+            llm_provider=llm_provider,
         )
 
-        content = assistant_message.get(
-            "content",
-            "I encountered an issue processing your request.",
-        )
+        content = assistant_message.get("content")
+        if not content:
+            content = "I encountered an issue processing your request."
 
         add_message(context.session_id, "assistant", content)
 
@@ -546,9 +587,9 @@ async def execute_tool(
 
 def get_all_tools():
     """Get all available tools for the agent."""
-    
+
     tools = []
-    
+
     # Local tools
     tools.append({
         "type": "function",
@@ -571,7 +612,7 @@ def get_all_tools():
             }
         }
     })
-    
+
     tools.append({
         "type": "function",
         "function": {
@@ -583,7 +624,7 @@ def get_all_tools():
             }
         }
     })
-    
+
     tools.append({
         "type": "function",
         "function": {
@@ -609,15 +650,90 @@ def get_all_tools():
             }
         }
     })
-    
-    # MCP tools
+
+    return tools
+
+
+def _needs_tools(query: str) -> bool:
+    """
+    Determine if query likely needs tool execution.
+    Returns False for simple conversational queries to skip tools entirely.
+    """
+    query_lower = query.lower().strip()
+
+    # Action keywords that indicate tools might be needed
+    action_keywords = [
+        # Slack actions
+        "send", "message", "post", "channel", "dm", "notify",
+        # Scheduling
+        "remind", "schedule", "timer", "alarm", "later", "tomorrow",
+        "in 5 minutes", "in an hour", "at",
+        # MCP/external actions
+        "github", "repo", "repository", "pull request", "pr",
+        "issue", "commit", "branch", "merge", "code review",
+        "notion", "page", "database", "doc", "document",
+        "notes", "wiki", "knowledge base",
+        # General action words
+        "create", "list", "show me", "find", "search for", "look up",
+    ]
+
+    return any(kw in query_lower for kw in action_keywords)
+
+
+def get_tools_for_query(query: str):
+    """
+    Smart tool loading - only load tools when query indicates need.
+    Saves thousands of tokens on conversational queries.
+    """
+    query_lower = query.lower()
+
+    # Skip tools entirely for simple conversational queries
+    if not _needs_tools(query):
+        logger.info("No tools needed for this query (conversational)")
+        return []
+
+    # Start with local tools for action queries
+    tools = get_all_tools()
+
+    # Keywords that indicate GitHub tools needed
+    github_keywords = [
+        "github", "repo", "repository", "pull request", "pr",
+        "issue", "commit", "branch", "merge", "code review"
+    ]
+
+    # Keywords that indicate Notion tools needed
+    notion_keywords = [
+        "notion", "page", "database", "doc", "document",
+        "notes", "wiki", "knowledge base"
+    ]
+
+    need_github = any(kw in query_lower for kw in github_keywords)
+    need_notion = any(kw in query_lower for kw in notion_keywords)
+
+    # If no MCP tools needed, return just local tools
+    if not need_github and not need_notion:
+        logger.info(f"Using {len(tools)} local tools only")
+        return tools
+
+    # Load only needed MCP tools
     try:
         mcp_tools = get_all_mcp_tools()
-        tools.extend(mcp_tools_to_openai(mcp_tools))
-        logger.info(f"Added {len(mcp_tools)} MCP tools")
+
+        filtered_tools = []
+        for tool in mcp_tools:
+            server_name = tool.get("serverName", "").lower()
+            if need_github and "github" in server_name:
+                filtered_tools.append(tool)
+            elif need_notion and "notion" in server_name:
+                filtered_tools.append(tool)
+
+        if filtered_tools:
+            tools.extend(mcp_tools_to_openai(filtered_tools))
+            logger.info(f"Added {len(filtered_tools)} MCP tools (filtered)")
+
     except Exception as e:
         logger.warning(f"Failed to load MCP tools: {e}")
-    
+
     return tools
 
 

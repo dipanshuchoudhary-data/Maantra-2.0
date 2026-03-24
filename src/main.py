@@ -30,6 +30,7 @@ from src.rag import (
     start_indexer,
     stop_indexer,
     get_document_count,
+    initialize_embedding_provider,
 )
 
 # Memory
@@ -69,6 +70,22 @@ def _is_placeholder_openai_key(api_key: str | None) -> bool:
     return any(token in lowered for token in placeholders)
 
 
+def _is_embedding_config_ready() -> bool:
+
+    provider = (config.rag.embedding_provider or "openai").lower()
+
+    if provider == "cohere":
+        return not _is_placeholder_openai_key(config.ai.cohere_api_key)
+
+    if provider == "openrouter":
+        return not _is_placeholder_openai_key(config.ai.openrouter_api_key)
+
+    if provider == "gemini":
+        return not _is_placeholder_openai_key(config.ai.gemini_api_key)
+
+    return not _is_placeholder_openai_key(config.ai.openai_api_key)
+
+
 # =========================================================
 # Main Startup
 # =========================================================
@@ -95,24 +112,28 @@ async def main():
 
         if config.rag.enabled:
 
-            # RAG embeddings require a working OpenAI key in this codebase.
-            if _is_placeholder_openai_key(config.ai.openai_api_key):
+            if not _is_embedding_config_ready():
                 logger.warning(
-                    "RAG disabled at startup because OPENAI_API_KEY is missing/placeholder"
+                    "RAG disabled at startup because embedding provider credentials are missing/placeholder"
                 )
             else:
 
                 logger.info("Initializing RAG system...")
 
-                await initialize_vector_store()
+                # Initialize embedding provider first
+                if not initialize_embedding_provider():
+                    logger.warning("RAG disabled: failed to initialize embedding provider")
+                else:
 
-                doc_count = await get_document_count()
+                    await initialize_vector_store()
 
-                logger.info(f"Vector store initialized ({doc_count} documents)")
+                    doc_count = await get_document_count()
 
-                await start_indexer()
+                    logger.info(f"Vector store initialized ({doc_count} documents)")
 
-                logger.info("Background indexer started")
+                    await start_indexer()
+
+                    logger.info("Background indexer started")
 
         else:
 

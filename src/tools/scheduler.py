@@ -2,42 +2,29 @@
 Task Scheduler
 
 Handles reminders and scheduled tasks for Slack users.
-
-Features
---------
-• one-time reminders
-• recurring cron jobs
-• background scheduler
-• Slack message delivery
 """
 
 import re
 from datetime import datetime, timedelta
-from typing import Optional, Dict
+from typing import Dict, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from slack_sdk.web.async_client import AsyncWebClient
 
 from src.config.settings import config
-from src.utils.logger import get_logger
-
 from src.memory.database import (
+    cancel_task as db_cancel_task,
     create_scheduled_task,
     get_pending_tasks,
-    update_task_status,
     get_user_tasks,
-    cancel_task as db_cancel_task,
+    update_task_status,
 )
+from src.utils.logger import get_logger
 
 logger = get_logger("scheduler")
 
-# Slack client
 slack_client = AsyncWebClient(token=config.slack.bot_token)
-
-# Background scheduler
 scheduler = AsyncIOScheduler()
-
-# Track active cron jobs
 active_jobs: Dict[str, str] = {}
 
 
@@ -46,8 +33,6 @@ class TaskScheduler:
     def __init__(self):
         self.running = False
 
-    # -----------------------------------------------------
-
     def start(self):
 
         if self.running:
@@ -55,17 +40,13 @@ class TaskScheduler:
             return
 
         scheduler.start()
-
         scheduler.add_job(
             self.process_pending_tasks,
             "interval",
             seconds=60,
         )
-
         self.running = True
         logger.info("Task scheduler started")
-
-    # -----------------------------------------------------
 
     def stop(self):
 
@@ -73,12 +54,8 @@ class TaskScheduler:
             return
 
         scheduler.shutdown(wait=False)
-
         self.running = False
-
         logger.info("Task scheduler stopped")
-
-    # -----------------------------------------------------
 
     async def schedule_task(
         self,
@@ -92,7 +69,7 @@ class TaskScheduler:
 
         logger.info(f"Scheduling task for {user_id}: {description}")
 
-        task = create_scheduled_task(
+        task_id = create_scheduled_task(
             user_id,
             channel_id,
             description,
@@ -101,24 +78,34 @@ class TaskScheduler:
             thread_ts,
         )
 
+        task = {
+            "id": task_id,
+            "user_id": user_id,
+            "channel_id": channel_id,
+            "thread_ts": thread_ts,
+            "task_description": description,
+            "cron_expression": cron_expression,
+            "scheduled_time": int(scheduled_time.timestamp()) if scheduled_time else None,
+        }
+
         if cron_expression:
             self.setup_cron_job(task)
 
-        return task
+        return task_id
 
-    # -----------------------------------------------------
+    def setup_cron_job(self, task: Dict[str, object]):
 
-    def setup_cron_job(self, task):
-
-        if not task.cron_expression:
+        cron_expression = task.get("cron_expression")
+        if not cron_expression:
             return
 
-        job_id = f"task-{task.id}"
-
+        job_id = f"task-{task['id']}"
         if job_id in active_jobs:
             return
 
-        parts = task.cron_expression.split()
+        parts = str(cron_expression).split()
+        if len(parts) != 5:
+            raise ValueError(f"Invalid cron expression: {cron_expression}")
 
         scheduler.add_job(
             self.execute_task,
@@ -133,61 +120,46 @@ class TaskScheduler:
         )
 
         active_jobs[job_id] = job_id
-
         logger.info(f"Cron job scheduled {job_id}")
-
-    # -----------------------------------------------------
 
     async def process_pending_tasks(self):
 
         tasks = get_pending_tasks()
 
         for task in tasks:
-
-            if task.cron_expression:
+            if task.get("cron_expression"):
                 continue
-
             await self.execute_task(task)
 
-    # -----------------------------------------------------
+    async def execute_task(self, task: Dict[str, object]):
 
-    async def execute_task(self, task):
-
-        logger.info(f"Executing task {task.id}")
+        task_id = int(task["id"])
+        logger.info(f"Executing task {task_id}")
 
         try:
-
-            update_task_status(task.id, "running")
+            update_task_status(task_id, "running")
 
             await slack_client.chat_postMessage(
-                channel=task.channel_id,
-                text=f"⏰ Reminder: {task.task_description}",
-                thread_ts=task.thread_ts,
+                channel=str(task["channel_id"]),
+                text=f"Reminder: {task['task_description']}",
+                thread_ts=task.get("thread_ts"),
             )
 
-            if not task.cron_expression:
-                update_task_status(task.id, "completed")
+            if task.get("cron_expression"):
+                update_task_status(task_id, "pending")
             else:
-                update_task_status(task.id, "pending")
+                update_task_status(task_id, "completed")
 
         except Exception as e:
-
-            logger.error(f"Task execution failed {task.id}: {e}")
-
-            update_task_status(task.id, "failed")
-
-    # -----------------------------------------------------
+            logger.error(f"Task execution failed {task_id}: {e}")
+            update_task_status(task_id, "failed")
 
     def get_user_tasks(self, user_id):
-
         return get_user_tasks(user_id)
-
-    # -----------------------------------------------------
 
     def cancel_task(self, task_id, user_id):
 
         job_id = f"task-{task_id}"
-
         if job_id in active_jobs:
             scheduler.remove_job(job_id)
             active_jobs.pop(job_id)
@@ -195,38 +167,29 @@ class TaskScheduler:
         return db_cancel_task(task_id, user_id)
 
 
-# Singleton
 task_scheduler = TaskScheduler()
-
-# =========================================================
-# Time Parsing Utilities
-# =========================================================
 
 
 def parse_relative_time(expression: str) -> Optional[datetime]:
 
     now = datetime.now()
-
     expr = expression.lower().strip()
-
     match = re.search(r"in (\d+) (minute|hour|day|week)s?", expr)
 
-    if match:
+    if not match:
+        return None
 
-        amount = int(match.group(1))
-        unit = match.group(2)
+    amount = int(match.group(1))
+    unit = match.group(2)
 
-        if unit == "minute":
-            return now + timedelta(minutes=amount)
-
-        if unit == "hour":
-            return now + timedelta(hours=amount)
-
-        if unit == "day":
-            return now + timedelta(days=amount)
-
-        if unit == "week":
-            return now + timedelta(weeks=amount)
+    if unit == "minute":
+        return now + timedelta(minutes=amount)
+    if unit == "hour":
+        return now + timedelta(hours=amount)
+    if unit == "day":
+        return now + timedelta(days=amount)
+    if unit == "week":
+        return now + timedelta(weeks=amount)
 
     return None
 

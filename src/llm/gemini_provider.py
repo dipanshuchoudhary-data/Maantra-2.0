@@ -6,7 +6,7 @@ from src.llm.base_provider import BaseLLMProvider
 
 class GeminiProvider(BaseLLMProvider):
 
-    def __init__(self):
+    def __init__(self, model_name: str | None = None):
 
         api_key = os.getenv("GEMINI_API_KEY")
 
@@ -15,7 +15,7 @@ class GeminiProvider(BaseLLMProvider):
 
         self.client = genai.Client(api_key=api_key)
 
-        self.model = os.getenv("MODEL_NAME", "gemini-1.5-pro")
+        self.model = model_name or os.getenv("MODEL_NAME", "gemini-1.5-pro")
 
     async def chat(self, messages, tools=None):
 

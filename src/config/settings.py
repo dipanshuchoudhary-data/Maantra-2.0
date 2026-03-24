@@ -43,13 +43,18 @@ class SlackConfig(BaseModel):
 
 class AIConfig(BaseModel):
     openai_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    cohere_api_key: Optional[str] = None
     default_model: str = "gpt-4o"
 
 
 class RAGConfig(BaseModel):
     enabled: bool = True
-    embedding_model: str = "text-embedding-3-small"
+    embedding_provider: str = "openai"  # openai, cohere, openrouter, gemini
+    embedding_model: str = "text-embedding-3-small"  # or embed-english-v3.0 for cohere
+    embedding_dimensions: int = 1536
     vector_db_path: str = "./data/chroma"
     index_interval_hours: int = 1
     max_results: int = 10
@@ -123,15 +128,26 @@ def load_settings() -> Settings:
 
     ai = AIConfig(
         openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY"),
+        gemini_api_key=os.getenv("GEMINI_API_KEY"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+        cohere_api_key=os.getenv("COHERE_API_KEY"),
         default_model=os.getenv("DEFAULT_MODEL", "gpt-4o"),
     )
 
     rag = RAGConfig(
         enabled=os.getenv("RAG_ENABLED", "true") != "false",
+        embedding_provider=os.getenv(
+            "RAG_EMBEDDING_PROVIDER",
+            os.getenv("EMBEDDING_PROVIDER", "openai"),
+        ).lower(),
         embedding_model=os.getenv(
             "RAG_EMBEDDING_MODEL",
-            "text-embedding-3-small",
+            os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
+        ),
+        embedding_dimensions=int(
+            os.getenv("RAG_EMBEDDING_DIMENSIONS",
+                      os.getenv("EMBEDDING_DIMENSIONS", "1536"))
         ),
         vector_db_path=os.getenv(
             "RAG_VECTOR_DB_PATH",
@@ -191,10 +207,10 @@ def load_settings() -> Settings:
         != "false",
     )
 
-    if not ai.openai_api_key and not ai.anthropic_api_key:
+    if not ai.openai_api_key and not ai.anthropic_api_key and not ai.openrouter_api_key:
         raise RuntimeError(
             "At least one AI provider must be configured "
-            "(OPENAI_API_KEY or ANTHROPIC_API_KEY)"
+            "(OPENAI_API_KEY or ANTHROPIC_API_KEY or OPENROUTER_API_KEY)"
         )
 
     settings = Settings(

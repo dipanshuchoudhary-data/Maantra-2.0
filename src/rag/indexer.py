@@ -26,6 +26,8 @@ from src.rag.vectorstore import (
     document_exists,
     initialize_vector_store,
     get_document_count,
+    Document,
+    DocumentMetadata,
 )
 
 from src.tools.slack_actions import list_channels, get_user_info
@@ -240,22 +242,23 @@ async def index_channel(channel_id: str, channel_name: str):
 
                     doc_id = f"{channel_id}:{msg['ts']}"
 
-                    metadata = {
-                        "channelId": channel_id,
-                        "channelName": channel_name,
-                        "userId": msg.get("user"),
-                        "userName": user_name,
-                        "timestamp": msg["ts"],
-                        "threadTs": msg.get("thread_ts"),
-                        "isThread": bool(msg.get("thread_ts")),
-                    }
+                    metadata = DocumentMetadata(
+                        channelId=channel_id,
+                        channelName=channel_name,
+                        userId=msg.get("user", "unknown"),
+                        userName=user_name,
+                        timestamp=msg["ts"],
+                        messageTs=msg["ts"],
+                        threadTs=msg.get("thread_ts"),
+                        isThread=bool(msg.get("thread_ts")),
+                    )
 
-                    docs.append({
-                        "id": doc_id,
-                        "text": processed,
-                        "embedding": embedding,
-                        "metadata": metadata,
-                    })
+                    docs.append(Document(
+                        id=doc_id,
+                        text=processed,
+                        embedding=embedding,
+                        metadata=metadata,
+                    ))
 
                 await add_documents(docs)
 
@@ -319,23 +322,24 @@ async def index_single_message(message: Dict[str, Any], channel_id: str, channel
             if user:
                 user_name = user.real_name or user.name
 
-        metadata = {
-            "channelId": channel_id,
-            "channelName": channel_name,
-            "userId": message.get("user"),
-            "userName": user_name,
-            "timestamp": message["ts"],
-            "threadTs": message.get("thread_ts"),
-            "isThread": bool(message.get("thread_ts")),
-        }
+        metadata = DocumentMetadata(
+            channelId=channel_id,
+            channelName=channel_name,
+            userId=message.get("user", "unknown"),
+            userName=user_name,
+            timestamp=message["ts"],
+            messageTs=message["ts"],
+            threadTs=message.get("thread_ts"),
+            isThread=bool(message.get("thread_ts")),
+        )
 
         await add_documents([
-            {
-                "id": doc_id,
-                "text": processed,
-                "embedding": embedding,
-                "metadata": metadata,
-            }
+            Document(
+                id=doc_id,
+                text=processed,
+                embedding=embedding,
+                metadata=metadata,
+            )
         ])
 
         logger.debug(f"Indexed message {doc_id}")

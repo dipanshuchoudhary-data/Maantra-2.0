@@ -70,6 +70,17 @@ def init_schema():
             approved_at INTEGER NOT NULL,
             approved_by TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS user_platform_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            platform_user_id TEXT NOT NULL,
+            platform_username TEXT,
+            linked_at INTEGER NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            UNIQUE(platform, platform_user_id)
+        );
         """
     )
     db.commit()
@@ -435,6 +446,113 @@ def cleanup_expired_pairing_codes():
     db.commit()
 
     return cur.rowcount
+
+
+# ---------------------------------------------------------
+# Platform Identity Management
+# ---------------------------------------------------------
+
+
+def link_platform_user(
+    user_id: str,
+    platform: str,
+    platform_user_id: str,
+    platform_username: Optional[str] = None
+) -> bool:
+    """
+    Link a platform account to a primary user ID.
+    This enables unified identity across Slack, Telegram, WhatsApp.
+    
+    Args:
+        user_id: Primary unified user ID
+        platform: Platform name ("slack", "telegram", "whatsapp")
+        platform_user_id: Platform-specific user ID
+        platform_username: Optional platform username
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        now = int(time.time())
+        db.execute(
+            """
+            INSERT OR REPLACE INTO user_platform_links
+            (user_id, platform, platform_user_id, platform_username, linked_at, is_active)
+            VALUES (?, ?, ?, ?, ?, 1)
+            """,
+            (user_id, platform, platform_user_id, platform_username, now)
+        )
+        db.commit()
+        return True
+    except Exception as e:
+        print(f"Failed to link platform user: {e}")
+        return False
+
+
+def get_user_by_platform(platform: str, platform_user_id: str) -> Optional[str]:
+    """
+    Get unified user_id from a platform-specific identifier.
+    
+    Args:
+        platform: Platform name ("slack", "telegram", "whatsapp")
+        platform_user_id: Platform-specific user ID
+    
+    Returns:
+        Unified user_id if found and active, None otherwise
+    """
+    cursor = db.execute(
+        """
+        SELECT user_id FROM user_platform_links
+        WHERE platform = ? AND platform_user_id = ? AND is_active = 1
+        """,
+        (platform, platform_user_id)
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def get_all_platform_identities(user_id: str) -> Dict[str, str]:
+    """
+    Get all platform user IDs for a given unified user.
+    
+    Args:
+        user_id: Primary unified user ID
+    
+    Returns:
+        Dictionary mapping platform names to platform user IDs
+    """
+    cursor = db.execute(
+        """
+        SELECT platform, platform_user_id FROM user_platform_links
+        WHERE user_id = ? AND is_active = 1
+        """,
+        (user_id,)
+    )
+    return {row[0]: row[1] for row in cursor.fetchall()}
+
+
+def get_or_create_unified_user(platform: str, platform_user_id: str, platform_username: Optional[str] = None) -> str:
+    """
+    Get or create a unified user ID for a platform account.
+    If the platform account is not yet linked, create a new unified ID.
+    
+    Args:
+        platform: Platform name ("slack", "telegram", "whatsapp")
+        platform_user_id: Platform-specific user ID
+        platform_username: Optional platform username
+    
+    Returns:
+        Unified user_id
+    """
+    # Check if already linked
+    user_id = get_user_by_platform(platform, platform_user_id)
+    if user_id:
+        return user_id
+    
+    # Create new unified ID based on platform and platform_user_id
+    user_id = f"{platform}:{platform_user_id}"
+    link_platform_user(user_id, platform, platform_user_id, platform_username)
+    return user_id
 
 
 # ---------------------------------------------------------

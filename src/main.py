@@ -21,7 +21,8 @@ from src.config.settings import config
 from src.utils.logger import get_logger
 
 from src.memory.database import initialize_database, close_database
-from src.channels.slack import start_slack_app, stop_slack_app
+from src.channels.channel_manager import channel_manager
+from src.channels.slack.handler import SlackChannelAdapter
 from src.tools.scheduler import task_scheduler
 
 # RAG
@@ -187,14 +188,23 @@ async def main():
         logger.info("Scheduler started")
 
         # -------------------------------------------------
-        # Slack Bot
+        # Slack Bot (via Channel Manager)
         # -------------------------------------------------
 
-        logger.info("Starting Slack app...")
+        logger.info("Registering Slack channel adapter...")
 
-        await start_slack_app()
+        if config.slack.bot_token:
+            slack_adapter = SlackChannelAdapter()
+            channel_manager.register(slack_adapter)
+            logger.info("Slack adapter registered")
+        else:
+            logger.warning("Slack bot token not configured")
 
-        logger.info("Slack bot running")
+        logger.info("Starting channel manager...")
+
+        await channel_manager.start_all()
+
+        logger.info("All channels started")
 
         logger.info("=" * 50)
         logger.info("Slack AI Assistant v2 is ready")
@@ -222,8 +232,8 @@ async def shutdown():
 
     try:
 
-        logger.info("Stopping Slack bot...")
-        await stop_slack_app()
+        logger.info("Stopping all channels...")
+        await channel_manager.stop_all()
 
         logger.info("Stopping MCP...")
         await shutdown_mcp()

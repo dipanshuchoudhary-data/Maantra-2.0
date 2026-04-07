@@ -42,11 +42,7 @@
 - [🌟 Key Features](#-key-features)
 - [🧱 Tech Stack](#-tech-stack)
 - [🏗️ Architecture Overview](#️-architecture-overview)
-- [⚡ Quick Start (5-Min)](#-quick-start-5-min)
 - [🔌 Platform Setup Guides](#-platform-setup-guides)
-  - [Slack (Production-Ready)](#slack-production-ready)
-  - [Telegram (Roadmap-Ready)](#telegram-roadmap-ready)
-  - [WhatsApp (Roadmap-Ready)](#whatsapp-roadmap-ready)
 - [⚙️ Configuration Guide](#️-configuration-guide)
 - [🧪 Usage Examples](#-usage-examples)
 - [🧩 API Reference (Quick)](#-api-reference-quick)
@@ -314,7 +310,7 @@ src/main.py
 
 ## ⚙️ Configuration Guide
 
-### `.env` template (extended)
+###  Slack `.env`  template (extended)
 
 ```env
 # Slack

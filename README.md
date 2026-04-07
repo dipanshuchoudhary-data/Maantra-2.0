@@ -20,7 +20,6 @@
 <img src="https://img.shields.io/badge/License-MIT-green" />
 <img src="https://img.shields.io/badge/Status-Production%20Optimization-00b894" />
 <img src="https://img.shields.io/github/actions/workflow/status/dipanshuchoudhary-data/Maantra-1.0/ci.yml?label=Build" />
-<img src="https://img.shields.io/github/stars/dipanshuchoudhary-data/Maantra-1.0?style=social" />
 <img src="https://img.shields.io/github/contributors/dipanshuchoudhary-data/Maantra-1.0" />
 <img src="https://img.shields.io/badge/Multi--LLM-OpenAI%20%7C%20OpenRouter%20%7C%20Gemini%20%7C%20Grok-orange" />
 <img src="https://img.shields.io/badge/MCP-Integrated-blueviolet" />

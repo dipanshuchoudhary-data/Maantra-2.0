@@ -29,6 +29,7 @@ from src.utils.logger import get_logger
 
 from src.memory.database import (
     get_or_create_session,
+    get_or_create_unified_user,
     get_session_metadata,
     update_session_metadata,
     is_user_approved,
@@ -373,7 +374,8 @@ Commands:
             return
 
         if command_lower == "llm show":
-            session = get_or_create_session(user, channel, thread_ts)
+            unified_user_id = get_or_create_unified_user("slack", user)
+            session = get_or_create_session(unified_user_id, channel, thread_ts, platform="slack")
             metadata = get_session_metadata(session["id"])
 
             selected_provider = metadata.get("llm_provider", "default")
@@ -410,7 +412,8 @@ Commands:
                 )
                 return
 
-            session = get_or_create_session(user, channel, thread_ts)
+            unified_user_id = get_or_create_unified_user("slack", user)
+            session = get_or_create_session(unified_user_id, channel, thread_ts, platform="slack")
             update_session_metadata(session["id"], {"llm_provider": requested_provider})
 
             await say(
@@ -429,7 +432,8 @@ Commands:
                 )
                 return
 
-            session = get_or_create_session(user, channel, thread_ts)
+            unified_user_id = get_or_create_unified_user("slack", user)
+            session = get_or_create_session(unified_user_id, channel, thread_ts, platform="slack")
             update_session_metadata(session["id"], {"llm_model": requested_model})
 
             await say(
@@ -487,7 +491,13 @@ Commands:
         try:
             logger.info(f"STEP 3a: Getting/creating session for user={user}, channel={channel}")
 
-            session = get_or_create_session(user, channel, thread_ts)
+            unified_user_id = get_or_create_unified_user("slack", user, user_info.get("name"))
+            session = get_or_create_session(
+                unified_user_id,
+                channel,
+                thread_ts,
+                platform="slack",
+            )
             session_metadata = get_session_metadata(session["id"])
 
             logger.info(f"STEP 3b: Got session id={session['id']}")
@@ -504,7 +514,7 @@ Commands:
 
             context = AgentContext(
                 session_id=session["id"],
-                user_id=user,
+                user_id=unified_user_id,
                 channel_id=channel,
                 thread_ts=thread_ts,
                 user_name=user_info.get("real_name") or user_info.get("name"),

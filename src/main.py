@@ -1,5 +1,5 @@
 """
-Slack AI Assistant v2 - Main Entry Point
+Maantra v2 - Main Entry Point
 
 Startup order
 -------------
@@ -207,7 +207,7 @@ async def main():
         logger.info("All channels started")
 
         logger.info("=" * 50)
-        logger.info("Slack AI Assistant v2 is ready")
+        logger.info("Maantra v2 connecting...")
         logger.info("=" * 50)
 
         # Wait until shutdown signal

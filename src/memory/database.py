@@ -101,15 +101,29 @@ def initialize_database():
 # ---------------------------------------------------------
 
 
-def get_or_create_session(user_id: str, channel_id: Optional[str], thread_ts: Optional[str]):
+def get_or_create_session(
+    user_id: str,
+    channel_id: Optional[str],
+    thread_ts: Optional[str],
+    platform: Optional[str] = None,
+):
     if thread_ts:
-        session_id = f"thread:{channel_id}:{thread_ts}"
+        if platform:
+            session_id = f"thread:{platform}:{channel_id}:{thread_ts}"
+        else:
+            session_id = f"thread:{channel_id}:{thread_ts}"
         session_type = "thread"
     elif channel_id and not channel_id.startswith("D"):
-        session_id = f"channel:{channel_id}"
+        if platform:
+            session_id = f"channel:{platform}:{channel_id}"
+        else:
+            session_id = f"channel:{channel_id}"
         session_type = "channel"
     else:
-        session_id = f"dm:{user_id}"
+        if platform:
+            session_id = f"dm:{platform}:{user_id}"
+        else:
+            session_id = f"dm:{user_id}"
         session_type = "dm"
 
     row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()

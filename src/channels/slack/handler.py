@@ -24,7 +24,9 @@ from src.channels.base_channel import (
     PlatformMessage,
     PlatformResponse,
 )
+from src.channels.slack.formatter import help_message
 from src.config.settings import settings
+from src.features.slack.reactions import SlackReactionWorkflow
 from src.utils.logger import get_logger
 
 from src.memory.database import (
@@ -63,6 +65,7 @@ class SlackChannelAdapter(BaseChannelAdapter):
         self.handler: Optional[AsyncSocketModeHandler] = None
         self.bot_id: Optional[str] = None
         self.agent = Agent()
+        self.reaction_workflow = SlackReactionWorkflow()
         self._setup_handlers()
 
     def _setup_handlers(self):
@@ -327,23 +330,7 @@ Ask an admin to approve with:
         if clean_text.lower() in ["help", "/help"]:
             logger.info("STEP 2: Help command detected")
 
-            await say(
-                text="""
-Maantra Assistant
-
-Commands:
-• help
-• summarize
-• llm options
-• llm show
-• set provider [openai|openrouter|gemini|grok]
-• set model [model-id]
-• remind me
-• my tasks
-• cancel task [id]
-• /reset
-"""
-            )
+            await say(**help_message())
             return
 
         # ------------------------------------------------
@@ -489,7 +476,11 @@ Commands:
         logger.info("STEP 3: Beginning agent processing")
 
         try:
-            logger.info(f"STEP 3a: Getting/creating session for user={user}, channel={channel}")
+            logger.info(f"STEP 3a: Fetching user info for {user}")
+
+            user_info = await self.get_user_info(user)
+
+            logger.info(f"STEP 3b: Got user_info: {user_info}")
 
             unified_user_id = get_or_create_unified_user("slack", user, user_info.get("name"))
             session = get_or_create_session(
@@ -500,17 +491,11 @@ Commands:
             )
             session_metadata = get_session_metadata(session["id"])
 
-            logger.info(f"STEP 3b: Got session id={session['id']}")
-
-            logger.info(f"STEP 3c: Fetching user info for {user}")
-
-            user_info = await self.get_user_info(user)
-
-            logger.info(f"STEP 3d: Got user_info: {user_info}")
+            logger.info(f"STEP 3c: Got session id={session['id']}")
 
             channel_info = {"name": "DM"} if is_dm else await self._get_channel_info(channel)
 
-            logger.info(f"STEP 3e: Got channel_info: {channel_info}")
+            logger.info(f"STEP 3d: Got channel_info: {channel_info}")
 
             context = AgentContext(
                 session_id=session["id"],
@@ -523,7 +508,7 @@ Commands:
                 llm_model=session_metadata.get("llm_model"),
             )
 
-            logger.info(f"STEP 3f: Created context | session_id={context.session_id}, user_name={context.user_name}")
+            logger.info(f"STEP 3e: Created context | session_id={context.session_id}, user_name={context.user_name}")
 
             logger.info(f"STEP 4: CALLING AGENT with message: '{clean_text}'")
 
@@ -568,10 +553,28 @@ Commands:
 
     async def _process_reaction(self, event: dict, say) -> None:
         """Process reaction events"""
-        # TODO: Implement reaction workflows
-        # This can be used for:
-        # - Marking messages as important
-        # - Quick actions (👍 = approve, ❌ = delete)
-        # - Saving to knowledge base
+        if not settings.features.reactions:
+            return
+
         logger.info(f"Reaction event received: {event.get('reaction')} by {event.get('user')}")
-        pass
+
+        async def build_summary(messages, channel_id, thread_ts, user_id):
+            context = AgentContext(
+                session_id=f"summary:slack:{channel_id}:{thread_ts}",
+                user_id=user_id,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+            )
+            return await summarize_thread(messages, context)
+
+        try:
+            handled = await self.reaction_workflow.handle(
+                event=event,
+                client=self.app.client,
+                bot_user_id=self.bot_id,
+                summary_builder=build_summary,
+            )
+            if handled:
+                logger.info(f"Reaction workflow handled: {event.get('reaction')}")
+        except Exception as e:
+            logger.error(f"Reaction workflow failed: {e}", exc_info=True)

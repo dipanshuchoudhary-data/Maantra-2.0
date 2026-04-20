@@ -26,7 +26,10 @@ from src.channels.base_channel import (
 )
 from src.channels.slack.formatter import help_message
 from src.config.settings import settings
+from src.features.slack.analytics import SlackChannelAnalytics
 from src.features.slack.reactions import SlackReactionWorkflow
+from src.features.slack.reminders import SlackReminderWorkflow
+from src.tools.scheduler import task_scheduler
 from src.utils.logger import get_logger
 
 from src.memory.database import (
@@ -65,6 +68,8 @@ class SlackChannelAdapter(BaseChannelAdapter):
         self.handler: Optional[AsyncSocketModeHandler] = None
         self.bot_id: Optional[str] = None
         self.agent = Agent()
+        self.analytics = SlackChannelAnalytics()
+        self.reminders = SlackReminderWorkflow(task_scheduler)
         self.reaction_workflow = SlackReactionWorkflow()
         self._setup_handlers()
 
@@ -427,6 +432,46 @@ Ask an admin to approve with:
                 text=f"Model set to {requested_model}",
                 thread_ts=thread_ts or ts,
             )
+            return
+
+        # ------------------------------------------------
+        # Task Commands
+        # ------------------------------------------------
+
+        if self.reminders.is_list_command(command_text):
+            unified_user_id = get_or_create_unified_user("slack", user)
+            await say(
+                **self.reminders.list_tasks(unified_user_id),
+                thread_ts=thread_ts or ts,
+            )
+            return
+
+        task_id = self.reminders.parse_cancel_command(command_text)
+        if task_id is not None:
+            unified_user_id = get_or_create_unified_user("slack", user)
+            await say(
+                **self.reminders.cancel_task(task_id, unified_user_id),
+                thread_ts=thread_ts or ts,
+            )
+            return
+
+        # ------------------------------------------------
+        # Channel Analytics
+        # ------------------------------------------------
+
+        if self.analytics.is_command(command_text):
+            if is_dm:
+                await say(
+                    text="Channel stats are available in channels, not DMs.",
+                    thread_ts=thread_ts or ts,
+                )
+                return
+
+            report = await self.analytics.build_report(
+                client=self.app.client,
+                channel_id=channel,
+            )
+            await say(**report, thread_ts=thread_ts or ts)
             return
 
         # ------------------------------------------------

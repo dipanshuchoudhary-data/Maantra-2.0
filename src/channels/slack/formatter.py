@@ -91,6 +91,55 @@ class SlackFormatter:
         return {"text": text or title or "Maantra", "blocks": blocks}
 
 
+def task_list_message(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not tasks:
+        return SlackFormatter.build_message(
+            "No pending tasks found.",
+            title="Tasks",
+        )
+
+    lines = []
+    for task in tasks:
+        task_id = task.get("id")
+        description = task.get("task_description") or "Untitled task"
+        status = task.get("status") or "pending"
+        when = task.get("scheduled_time") or task.get("cron_expression") or "unscheduled"
+        lines.append(f"- `#{task_id}` {description} ({status}, {when})")
+
+    return SlackFormatter.build_message(
+        "\n".join(lines),
+        title="Tasks",
+        footer="Use `cancel task task-id` to cancel a pending task.",
+    )
+
+
+def task_cancel_message(task_id: int, cancelled: bool) -> Dict[str, Any]:
+    if cancelled:
+        text = f"Cancelled task `#{task_id}`."
+    else:
+        text = f"Task `#{task_id}` was not found or is no longer pending."
+
+    return SlackFormatter.build_message(text, title="Tasks")
+
+
+def channel_stats_message(stats: Dict[str, Any]) -> Dict[str, Any]:
+    top_users = stats.get("top_users") or []
+    top_user_lines = [
+        f"- `<@{user_id}>`: {count} messages"
+        for user_id, count in top_users[:5]
+    ]
+    top_users_text = "\n".join(top_user_lines) if top_user_lines else "- No user messages found"
+
+    text = (
+        f"*Messages scanned:* {stats.get('messages_scanned', 0)}\n"
+        f"*Unique users:* {stats.get('unique_users', 0)}\n"
+        f"*Thread replies:* {stats.get('thread_replies', 0)}\n\n"
+        f"*Most active users*\n{top_users_text}"
+    )
+
+    return SlackFormatter.build_message(text, title="Channel Stats")
+
+
 def help_message() -> Dict[str, Any]:
     return SlackFormatter.build_message(
         (
@@ -104,6 +153,8 @@ def help_message() -> Dict[str, Any]:
             "- `remind me ...`\n"
             "- `my tasks`\n"
             "- `cancel task task-id`\n\n"
+            "*Channel*\n"
+            "- `channel stats`\n\n"
             "*Reaction shortcuts*\n"
             "- Add `:memo:` or `:page_facing_up:` to summarize a message thread\n"
             "- Add `:bookmark:` to save a message"

@@ -162,9 +162,11 @@ class SlackChannelAdapter(BaseChannelAdapter):
     ) -> bool:
         """Send response to Slack"""
         try:
+            if not response.text and not response.formatting:
+                return False
+
             kwargs = {
                 "channel": context["channel"],
-                "text": response.text,
             }
 
             # Handle threading
@@ -177,7 +179,13 @@ class SlackChannelAdapter(BaseChannelAdapter):
             if response.formatting:
                 kwargs["blocks"] = response.formatting.get("blocks")
 
-            await self.app.client.chat_postMessage(**kwargs)
+            text_chunks = self._split_text_for_slack(response.text or "")
+            for index, chunk in enumerate(text_chunks):
+                payload = dict(kwargs)
+                payload["text"] = chunk or response.fallback_text or "Maantra"
+                if index > 0 and "blocks" in payload:
+                    payload.pop("blocks", None)
+                await self.app.client.chat_postMessage(**payload)
             return True
 
         except Exception as e:
@@ -245,6 +253,44 @@ class SlackChannelAdapter(BaseChannelAdapter):
             model = model[1:].strip()
 
         return model
+
+    def _split_text_for_slack(self, text: str) -> List[str]:
+        """Split oversized message text into Slack-safe chunks."""
+        if not text:
+            return [""]
+        if len(text) <= self.max_message_length:
+            return [text]
+
+        chunks: List[str] = []
+        remaining = text
+        while len(remaining) > self.max_message_length:
+            split_at = remaining.rfind("\n", 0, self.max_message_length)
+            if split_at <= 0:
+                split_at = self.max_message_length
+            chunks.append(remaining[:split_at].rstrip())
+            remaining = remaining[split_at:].lstrip()
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
+    async def _reply(
+        self,
+        *,
+        channel: str,
+        text: str,
+        thread_ts: Optional[str] = None,
+        should_thread: bool = False,
+        formatting: Optional[Dict[str, Any]] = None,
+        fallback_text: Optional[str] = None,
+    ) -> None:
+        response = PlatformResponse(
+            text=text,
+            should_thread=should_thread,
+            reply_to_id=thread_ts if not should_thread else None,
+            formatting=formatting,
+            fallback_text=fallback_text,
+        )
+        await self.send_response(response, {"channel": channel, "thread_ts": thread_ts})
 
     async def _get_channel_info(self, channel_id: str) -> Dict[str, Any]:
         """Get channel info from Slack"""
@@ -334,8 +380,14 @@ Ask an admin to approve with:
 
         if clean_text.lower() in ["help", "/help"]:
             logger.info("STEP 2: Help command detected")
-
-            await say(**help_message())
+            help_payload = help_message()
+            await self._reply(
+                channel=channel,
+                text=help_payload.get("text", "Maantra help"),
+                thread_ts=thread_ts or ts,
+                formatting={"blocks": help_payload.get("blocks")},
+                fallback_text="Maantra help",
+            )
             return
 
         # ------------------------------------------------
@@ -437,6 +489,17 @@ Ask an admin to approve with:
         # ------------------------------------------------
         # Task Commands
         # ------------------------------------------------
+
+        if self.reminders.is_create_command(command_text):
+            unified_user_id = get_or_create_unified_user("slack", user)
+            reminder_payload = await self.reminders.create_task(
+                user_id=unified_user_id,
+                channel_id=channel,
+                text=command_text,
+                thread_ts=thread_ts,
+            )
+            await say(**reminder_payload, thread_ts=thread_ts or ts)
+            return
 
         if self.reminders.is_list_command(command_text):
             unified_user_id = get_or_create_unified_user("slack", user)
@@ -563,9 +626,11 @@ Ask an admin to approve with:
 
             logger.info(f"STEP 5: SENDING RESPONSE TO SLACK")
 
-            await say(
+            await self._reply(
+                channel=channel,
                 text=response.content,
                 thread_ts=thread_ts or ts if response.should_thread else None,
+                should_thread=response.should_thread,
             )
 
             logger.info("STEP 6: SUCCESSFULLY SENT TO SLACK [OK]")
@@ -588,7 +653,8 @@ Ask an admin to approve with:
                 user_error = "Sorry, something went wrong processing your message. Check logs for details."
 
             try:
-                await say(
+                await self._reply(
+                    channel=channel,
                     text=user_error,
                     thread_ts=thread_ts or ts,
                 )
